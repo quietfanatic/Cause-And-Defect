@@ -1,0 +1,1024 @@
+#!/usr/bin/perl
+use v5.10;
+use strict;
+use warnings;
+use Quantum::Superpositions;
+
+
+### Config
+
+our $WIDTH = 6;
+our $HEIGHT = 9;
+
+
+### Constants
+
+sub BEXT () { 1 };
+sub BMOD () { 2 };
+sub NEUT () { 3 };
+sub RMOD () { 4 };
+sub REXT () { 5 };
+sub CHAOS () { 6 };
+our @territory_names = (
+	'Unallocated',
+	'Blue Extreme',
+	'Blue Moderate',
+	'Neutral',
+	'Red Moderate',
+	'Red Extreme',
+	'Chaos',
+);
+sub UP () { 0 };
+sub RIGHT () { 1 };
+sub DOWN () { 2 };
+sub LEFT () { 3 };
+sub BLUE () { 0 };
+sub RED () { 1 };
+
+
+### Board
+
+our @board;
+for (0..$HEIGHT-1) {
+	$board[$_] = [(0) x $WIDTH];
+}
+our @possibilities;
+for my $y (0..$HEIGHT-1) {
+	$possibilities[$y] = [];
+	for my $x (0..$WIDTH-1) {
+		$possibilities[$y][$x] = [1..6];
+	}
+}
+our @paths;
+
+
+### Pieces
+
+our @blue = (int(rand($WIDTH)), int(rand($HEIGHT-2)));
+our @red = (int(rand($WIDTH)), int(rand($HEIGHT-2)));
+while ($blue[0] == $red[0] and $blue[1] == $red[1]) {
+	@red = (int(rand($WIDTH)), int(rand($HEIGHT-2)));
+}
+
+our @player = (\@blue, \@red);
+our @police = ($HEIGHT-1) x $WIDTH;
+
+our @tile_pos = (0, 0);
+our $tile_type;
+
+### Other state
+
+our $turn = (0, 1)[rand(2)];
+our $state = 'start';
+our @origpos = (0, 0);
+our @moves = ();
+our $move_counter = 0;
+our $move_in_own = 0;
+our $origtile = 0;
+our $curpolice;
+our $origpolice;
+our $need_confirm = 0;
+
+sub px () : lvalue { $player[$turn][0] }
+sub py () : lvalue { $player[$turn][1] }
+
+
+### Appearance
+
+our @colors = (15, 21, 32, 245, 130, 124, 16);
+our $color_off = 236;
+our $redcolor = 210;
+our $bluecolor = 111;
+our $policecolor = 118;
+
+our $command = "";
+our $status = "";
+our $text_line = 0;
+our @text = (
+	sub { },
+	sub { print "CAUSE AND DEFECT v0.1"; },
+	sub { },
+	sub {
+		print $turn == BLUE
+			? "\e[38;5;${bluecolor}mBLUE TURN"
+			: "\e[38;5;${redcolor}mRED TURN";
+	},
+	sub { print "Place a $territory_names[$tile_type] tile."; },
+	sub { print $status; },
+	sub { },
+	sub {
+		print "Arrow keys ― Move tile";
+	},
+	sub {
+		print "Enter ― Place tile";
+	},
+	sub {
+		print "Shift+Q ― Quit";
+	},
+);
+our @text_2 = (
+	sub { },
+	sub { print "CAUSE AND DEFECT v0.1"; },
+	sub { },
+	sub {
+		print $turn == BLUE
+			? "\e[38;5;${bluecolor}mBLUE TURN"
+			: "\e[38;5;${redcolor}mRED TURN";
+	},
+	sub {
+		print( "Move: "
+			. ($move_counter < 3 ? '1 ' : '  ')
+			. ($move_counter < 2 ? '2 ' : '  ')
+			. ($move_counter < 1 ? '3 ' : '  ')
+			. "  Action: "
+			. $command);
+	},
+	sub { print $status; },
+	sub { },
+	sub {
+		if ($state eq 'police') {
+			print "Arrow keys ― Move Time Police";
+		}
+		else {
+			print "Arrow keys ― Move time machine";
+		}
+	},
+	sub { print $need_confirm == 2
+			? "Enter      ― Really finish turn" : "Enter      ― Finish turn";
+	},
+	sub { print "Backspace  ― Undo"; },
+	sub { print "Shift+Q    ― Quit"; },
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == BEXT;
+		$able &&= ($origtile || $board[py][px]) != BEXT;
+		print(($able ? "\e[38;5;$colors[BEXT]m" : "\e[38;5;${color_off}m")
+			. "◼ B ― change to Blue Extreme");
+	},
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == BMOD;
+		$able &&= ($origtile || $board[py][px]) != BMOD;
+		print(($able ? "\e[38;5;$colors[BMOD]m" : "\e[38;5;${color_off}m")
+			. "◼ b ― change to Blue Moderate");
+	},
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == NEUT;
+		$able &&= ($origtile || $board[py][px]) != NEUT;
+		print(($able ? "\e[38;5;$colors[NEUT]m" : "\e[38;5;${color_off}m")
+			. "◼ n ― change to Neutral");
+	},
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == RMOD;
+		$able &&= ($origtile || $board[py][px]) != RMOD;
+	 	print(($able ? "\e[38;5;$colors[RMOD]m" : "\e[38;5;${color_off}m")
+			. "◼ r ― change to Red Moderate");
+	},
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == REXT;
+		$able &&= ($origtile || $board[py][px]) != REXT;
+		print(($able ? "\e[38;5;$colors[REXT]m" : "\e[38;5;${color_off}m")
+			. "◼ R ― change to Red Extreme");
+	},
+	sub {
+		my $able = any(@{$possibilities[py][px]}) == CHAOS;
+		$able &&= ($origtile || $board[py][px]) != CHAOS;
+		print(($able ? "\e[38;5;231m◻" : "\e[38;5;${color_off}m◼")
+			. " c ― change to Chaos");
+	},
+	(map {my $x = $_; say $x; sub {
+		my $able = $board[$HEIGHT-1][$x-1] == ($turn == BLUE ? any(BEXT, BMOD) : any(REXT, RMOD));
+		print(($able ? "\e[38;5;${policecolor}m" : "\e[38;5;${color_off}m")
+		    . "● $x ― Move Time Police #$x");
+	}} (1..$WIDTH)),
+);
+
+
+### Utility
+
+sub pick {
+	return $_[rand(@_)];
+}
+
+sub merge {
+	my $target = shift;
+	for my $n (@_) {
+		push @{$target}, $n unless grep $_ == $n, @{$target};
+	}
+}
+
+sub microsleep {
+	select(undef, undef, undef, $_[0]);
+}
+
+
+sub values_before {
+	my ($in, $x, $y) = @_;
+	$y -= 1;
+	if ($x == 0) {
+		return $in->[$y][$x], $in->[$y][$x+1];
+	}
+	elsif ($x == $WIDTH-1) {
+		return $in->[$y][$x-1], $in->[$y][$x];
+	}
+	else {
+		return $in->[$y][$x-1],
+		       $in->[$y][$x],
+		       $in->[$y][$x+1];
+	}
+}
+
+
+### Possibilities
+
+sub poss ($$) {
+	my ($x, $y) = @_;
+	if ($y == 0) {
+		return 1..6 if $board[$y][$x] == 0;
+		return ($board[$y][$x]-2)%6+1,
+		        $board[$y][$x],
+		        $board[$y][$x]%6+1;
+	}
+	my @tiles = values_before(\@board, $x, $y);
+	#say "Tiles: @tiles";
+	my @res;
+	if ($x == 0) {
+		for my $a ($board[$y-1][$x] || @{$possibilities[$y-1][$x]}) {
+			for my $b ($board[$y-1][$x+1] || @{$possibilities[$y-1][$x+1]}) {
+				merge \@res, poss_single($x, $y, $a, $b);
+			}
+		}
+	}
+	elsif ($x == $WIDTH-1) {
+		for my $a ($board[$y-1][$x-1] || @{$possibilities[$y-1][$x-1]}) {
+			for my $b ($board[$y-1][$x] || @{$possibilities[$y-1][$x]}) {
+				merge \@res, poss_single($x, $y, $a, $b);
+			}
+		}
+	}
+	else {
+		for my $a ($board[$y-1][$x-1] || @{$possibilities[$y-1][$x-1]}) {
+			for my $b ($board[$y-1][$x] || @{$possibilities[$y-1][$x]}) {
+				for my $c ($board[$y-1][$x+1] || @{$possibilities[$y-1][$x+1]}) {
+					merge \@res, poss_single($x, $y, $a, $b, $c);
+				}
+			}
+		}
+	}
+	#say "$x,$y => @res";
+	return @res;
+}
+sub poss_single ($$@) {
+	my ($x, $y, @tiles) = @_;
+	
+	 # Unanimity rule
+	if (all(@tiles) == $tiles[0]) {
+		#print "[unan]";
+		for (reverse (0 ... ($y-1))) {
+			my @r;
+			my $old = $board[$_][$x];
+			if ($old == 0) {
+				push @r, @{$possibilities[$_][$x]};
+				if (any($possibilities[$_][$x]) != $tiles[0]) {
+					return $tiles[0], @r;
+				}
+			}
+			elsif ($old != $tiles[0]) {
+				#say "Unanimous, rebellion";
+				return $tiles[0], $old;
+			}
+		}
+		#say "Unanimous, no rebellion";
+		return $tiles[0];
+	}
+
+	 # Edge rule
+	if ($x == 0 or $x == $WIDTH-1) {
+		#say "Edge";
+		return @tiles;
+	}
+
+	 # Chaos rule
+	#say "Chaos";
+	if (any(@tiles) == CHAOS) { return 1..6; };
+
+	 # Decadence
+	if (all(@tiles) == any(REXT, RMOD)) { return RMOD };
+	if (all(@tiles) == any(BEXT, BMOD)) { return BMOD };
+	
+	my $sum = 0;
+	my $n = 0;
+	my $e = 0;
+	if (any(@tiles) == NEUT) { $n = 1; }
+	if (any(@tiles) == any(REXT, BEXT)) { $e = 1; }
+	$sum += $_-3 for @tiles;
+	#say "Misc: n: $n, e: $e, sum: $sum";
+	my @c = ();
+	if (any(@tiles) == REXT and any(@tiles) == BEXT) { @c = CHAOS; }
+	return @c, (
+	$sum <= -2 ? (
+		$n ? $e ? (BEXT, BMOD) : BMOD
+		   : $e ? BEXT : (BEXT, BMOD)
+	)
+	: $sum == -1 ? (NEUT,
+		$n ? $e ? (BEXT, BMOD) : BMOD
+		   : $e ? BEXT : (BEXT, BMOD)
+	)
+	: $sum == 0 ? (
+		$n ? $e ? (BEXT..REXT) : (BMOD..RMOD)
+		   : $e ? (BEXT, NEUT, REXT) : (BEXT..REXT)
+	)
+	: $sum == 1 ? (NEUT,
+		$n ? $e ? (RMOD, REXT) : RMOD
+		   : $e ? REXT : (RMOD, REXT)
+	)
+	: $sum >= 2 ? (
+		$n ? $e ? (RMOD, REXT) : RMOD
+		   : $e ? REXT : (RMOD, REXT)
+	) : () );
+}
+
+
+### Starting
+
+sub random_seed {
+	for my $y (0..$HEIGHT-1) {
+		for my $x (0..$WIDTH-1) {
+			my @p = poss($x, $y);
+			#say "Poss: @p";
+			@{$possibilities[$y][$x]} = @p;
+			$board[$y][$x] = pick(@{$possibilities[$y][$x]});
+			#say $board[$y][$x];
+		}
+	}
+	for my $x (0..$WIDTH-1) {
+		@{$possibilities[0][$x]} = poss($x, 0);
+	}
+}
+
+
+### Tile Placement
+
+sub draw_tile {
+	$tile_type = pick(1..6);
+}
+
+sub move_tile {
+	given ($_[0]) {
+		when (UP) { return if $tile_pos[1] >= $HEIGHT-1; $tile_pos[1]++ }
+		when (DOWN) { return if $tile_pos[1] <= 0; $tile_pos[1]-- }
+		when (RIGHT) { return if $tile_pos[0] >= $WIDTH-1; $tile_pos[0]++ }
+		when (LEFT) { return if $tile_pos[0] <= 0; $tile_pos[0]-- }
+	}
+}
+
+sub place_tile {
+	if ($board[$tile_pos[1]][$tile_pos[0]] == 0) {
+		if (any(@{$possibilities[$tile_pos[1]][$tile_pos[0]]}) == $tile_type) {
+			$board[$tile_pos[1]][$tile_pos[0]] = $tile_type;
+			propogate(@tile_pos);
+			return 1;
+		}
+		else {
+			$status = "That tile is not possible for this space.";
+			return 0;
+		}
+	}
+	else {
+		$status = "This space already has a territory.";
+		return 0;
+	}
+}
+
+sub board_full {
+	for my $y (0..$HEIGHT-1) {
+		for my $x (0..$WIDTH-1) {
+			if ($board[$y][$x] == 0) { return 0; }
+		}
+	}
+	return 1;
+}
+
+
+### Moving
+
+sub start_move {
+	@origpos = @{$player[$turn]};
+	$move_counter = 0;
+	$move_in_own = 0;
+}
+sub move {
+	my ($direction) = @_;
+	my $pos = $player[$turn];
+	my @newpos = @{$pos};
+	given ($direction) {
+		when (UP)    { $newpos[1]++; return if $newpos[1] > $HEIGHT-1; }
+		when (DOWN)  { $newpos[1]--; return if $newpos[1] < 0; }
+		when (RIGHT) { $newpos[0]++; return if $newpos[0] > $WIDTH-1; }
+		when (LEFT)  { $newpos[0]--; return if $newpos[0] < 0; }
+	}
+	if ($newpos[0] == $origpos[0]
+	and $newpos[1] == $origpos[1]) {
+		$move_counter = 0;
+		$move_in_own = 0;
+		@moves = ();
+		@{$pos} = @newpos;
+		return;
+	}
+	for (0..$#moves) {
+		if ($moves[$_][0] == $newpos[0]
+		and $moves[$_][1] == $newpos[1]) {
+			@moves = @moves[0..$_];
+			@{$pos} = @newpos;
+			$move_counter = $moves[-1][3];
+			$move_in_own = $moves[-1][4];
+			return;
+		}
+	}
+	if ($newpos[0] == $player[!$turn][0]
+	and $newpos[1] == $player[!$turn][1]) {
+		$status = "Cannot move onto the other player.";
+		return;
+	}
+	if ($newpos[1] == $police[$newpos[0]]) {
+		$status = "Cannot move onto the Time Police.";
+		return;
+	}
+	my $move_type = 'normal';
+	if ($turn == RED) {
+		if ($board[$pos->[1]][$pos->[0]] eq any(RMOD, REXT)
+		and $board[$newpos[1]][$newpos[0]] eq any(RMOD, REXT)) {
+			$move_type = 'own';
+		}
+		elsif ($board[$newpos[1]][$newpos[0]] eq any(BEXT, CHAOS)) {
+			$move_type = 'enemy';
+		}
+	}
+	else {
+		if ($board[$pos->[1]][$pos->[0]] eq any(BEXT, BMOD)
+		and $board[$newpos[1]][$newpos[0]] eq any(BEXT, BMOD)) {
+			$move_type = 'own';
+		}
+		elsif ($board[$newpos[1]][$newpos[0]] eq any(REXT, CHAOS)) {
+			$move_type = 'enemy';
+		}
+	}
+	if ($move_type eq 'own') {
+		if ($move_counter == 3 and !$move_in_own) {
+			$status = "Out of movement points.";
+			return;
+		}
+		elsif (!$move_in_own) {
+			$move_counter++;
+			$move_in_own = 1;
+		}
+	}
+	elsif ($move_counter == 3) {
+		$status = "Out of movement points.";
+		return;
+	}
+	elsif ($move_type eq 'enemy') {
+		$move_counter = 3;
+	}
+	else {
+		$move_counter++;
+		$move_in_own = 0;
+	}
+	@{$pos} = @newpos;
+	push @moves, [$pos->[0], $pos->[1], $direction, $move_counter, $move_in_own];
+}
+
+sub undo_move {
+	my $move = pop @moves;
+	if (@moves) {
+		px = $moves[-1][0];
+		py = $moves[-1][1];
+		$move_counter = $moves[-1][3];
+		$move_in_own = $moves[-1][4];
+	}
+	else {
+		px = $origpos[0];
+		py = $origpos[1];
+		$move_counter = 0;
+		$move_in_own = 0;
+	}
+		
+}
+
+sub can_end_move {
+	my $x = px;
+	my $y = py;
+	if ($x == 0) {
+		if (any(@police[0, 1]) == any($y-1, $y, $y+1)) {
+			return 0;
+		}
+	}
+	elsif ($x == $WIDTH-1) {
+		if (any(@police[$WIDTH-2, $WIDTH-1]) == any($y-1, $y, $y+1)) {
+			return 0;
+		}
+	}
+	else {
+		if (any(@police[$x-1, $x, $x+1]) == any($y-1, $y, $y+1)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+sub end_move {
+	if (can_end_move()) {
+		@moves = ();
+		return 1;
+	}
+	else {
+		$status = "Cannot land next to the Time Police.";
+		return 0;
+	}
+}
+
+
+### Changing territory
+
+sub alter {
+	my ($new) = @_;
+	my $x = px;
+	my $y = py;
+	if ($new == $board[$y][$x]) {
+		$status = "This space is already $territory_names[$new].";
+		return 0;
+	}
+	if (not grep $_ == $new, @{$possibilities[$y][$x]}) {
+		$status = "This space cannot be $territory_names[$new].";
+		return 0;
+	}
+	$origtile = $board[$y][$x];
+	$board[$y][$x] = $new;
+	return 1;
+}
+
+sub propogate($$) {
+	my ($x, $y) = @_;
+	$status = "Creating future...";
+	render();
+	my @changed;
+	for (0..$HEIGHT-1) {
+		$changed[$_] = [(0) x 6];
+	}
+	$changed[$y][$x] = 1;
+	if ($y == 0) { @{$possibilities[$y][$x]} = poss($x, $y) };
+	for my $y (($y+1)..$HEIGHT-1) {
+		#say "Step $y";
+		for my $x (0..$WIDTH-1) {
+			#say "-$x";
+			my @tiles_before = values_before(\@board, $x, $y);
+			if (any(values_before(\@changed, $x, $y)) == 1
+			 or all(@tiles_before) == $tiles_before[0]) {
+				my @old = @{$possibilities[$y][$x]};
+				my @poss = @{$possibilities[$y][$x]} = poss($x, $y);
+				if ($state eq 'start') {
+#					unless (@old == @poss and grep { $old[$_] == $poss[$_] } 0..$#old) {
+						$changed[$y][$x] = 1;
+#					}
+					if (@poss == 1) {
+						$board[$y][$x] = @{$possibilities[$y][$x]}[0];
+						$changed[$y][$x] = 1;
+					}
+					elsif ($board[$y][$x] != 0 and not grep $_ == $board[$y][$x], @{$possibilities[$y][$x]}) {
+						$board[$y][$x] = pick(@{$possibilities[$y][$x]});
+						$changed[$y][$x] = 1;
+					}
+
+				}
+				else {
+					if (not grep $_ == $board[$y][$x], @{$possibilities[$y][$x]}
+					 or any(@tiles_before) == CHAOS) {
+						my $old = $board[$y][$x];
+						$board[$y][$x] = pick(@{$possibilities[$y][$x]});
+						$changed[$y][$x] = 1 unless $old == $board[$y][$x];
+					}
+				}
+			}
+		}
+		microsleep(.3);
+		render();
+	}
+	return 1;
+}
+
+### Moving police
+
+sub start_move_police {
+	$origpolice = $police[$curpolice];
+}
+
+sub move_police {
+	my ($dir) = @_;
+	my $newpos;
+	if ($dir == UP) {
+		$newpos = $police[$curpolice] + 1;
+		if (($blue[0] == $curpolice and $blue[1] == $newpos)
+		 or ($red[0] == $curpolice and $red[1] == $newpos)) {
+			$newpos++;
+		}
+	}
+	elsif ($dir == DOWN) {
+		$newpos = $police[$curpolice] - 1;
+		if (($blue[0] == $curpolice and $blue[1] == $newpos)
+		 or ($red[0] == $curpolice and $red[1] == $newpos)) {
+			$newpos--;
+		}
+	}
+	else { return 0; }
+	if ($newpos < 0 or $newpos >= $HEIGHT) {
+		return 0;
+	}
+	else {
+		$police[$curpolice] = $newpos;
+	}
+}
+
+sub undo_move_police {
+	$police[$curpolice] = $origpolice;
+}
+
+sub end_move_police {
+}
+
+
+
+### Rendering
+
+sub make_paths {
+	for my $y (0..$HEIGHT-1) {
+		$paths[$y] = [];
+		for my $x (0..$WIDTH-1) {
+			$paths[$y][$x] = [0, 0, 0, 0];
+		}
+	}
+	#use Data::Dumper;
+	#print Dumper(@paths);
+	return unless @moves;
+	#say "!!!";
+	my ($x, $y) = @origpos;
+	for (@moves) {
+		#print "$_->[2]";
+		given ($_->[2]) {
+			when (UP) {
+				$paths[$y][$x][UP] = 1;
+				$paths[++$y][$x][DOWN] = 1;
+			}
+			when (DOWN) {
+				$paths[$y][$x][DOWN] = 1;
+				$paths[--$y][$x][UP] = 1;
+			}
+			when (RIGHT) {
+				$paths[$y][$x][RIGHT] = 1;
+				$paths[$y][++$x][LEFT] = 1;
+			}
+			when (LEFT) {
+				$paths[$y][$x][LEFT] = 1;
+				$paths[$y][--$x][RIGHT] = 1;
+			}
+		}
+	}
+	#print "\n";
+}
+
+sub render {
+	#use Data::Dumper;
+	#print Dumper(\@board);
+	make_paths();
+	#print Dumper(@paths);
+	system('clear');
+	$text_line = 0;
+	print "\e[48;5;236m                                  \e[0m";
+	($text[$text_line++] // sub{})->();
+	print "\n\e[48;5;236m  ";
+	for my $x (0..$WIDTH-1) {
+		print "\e[48;5;$colors[$board[$HEIGHT-1][$x]]m     ";
+	}
+	print "\e[48;5;236m  \e[0m ";
+	($text[$text_line++] // sub{})->();
+	print "\n\e[48;5;236m  ";
+	for my $x (1..$WIDTH) {
+		print "\e[48;5;$colors[$board[$HEIGHT-1][$x-1]]m\e[38;5;${policecolor}m  $x  ";
+	}
+	print "\e[48;5;236m  \e[0m ";
+	($text[$text_line++] // sub{})->();
+	print "\n";
+	for my $y (reverse(0..$HEIGHT-1)) {
+		print "\e[48;5;236m  ";
+		for my $x (0..$WIDTH-1) {
+			print "\e[48;5;$colors[$board[$y][$x]]m";
+			#say $paths[$y][$x][UP];
+			if ($paths[$y][$x][UP]) { print "\e[38;5;16m  ┃  "; }
+			else { print "     "; }
+		}
+		print "\e[48;5;236m  \e[0m ";
+		($text[$text_line++] // sub{})->();
+		print "\n\e[48;5;236m  ";
+		for my $x (0..$WIDTH-1) {
+			print "\e[48;5;$colors[$board[$y][$x]]m";
+			if ($paths[$y][$x][LEFT]) {
+				if ((!$paths[$y][$x][RIGHT]
+				 and !$paths[$y][$x][UP]
+				 and !$paths[$y][$x][DOWN])
+				  or ($state eq 'police' and $curpolice == $x and $police[$curpolice] == $y)) {
+					print "\e[38;5;16m━╸";
+				}
+				else { print "\e[38;5;16m━━"; }
+			}
+			else { print "  "; }
+			if ($state eq 'start') {
+				if ($tile_pos[0] == $x and $tile_pos[1] == $y) {
+					print "\e[38;5;$colors[$tile_type]m◼";
+				}
+				elsif ($board[$y][$x] == 0) { print "\e[38;5;16m?"; }
+				else { print ' '; }
+			}
+			elsif ($red[0] == $x and $red[1] == $y) {
+				print "\e[38;5;${redcolor}m●";
+			}
+			elsif ($blue[0] == $x and $blue[1] == $y) {
+				print "\e[38;5;${bluecolor}m●";
+			}
+			elsif ($police[$x] == $y) {
+				print "\e[38;5;${policecolor}m●"
+			}
+			elsif (+@moves and $origpos[0] == $x and $origpos[1] == $y) {
+				print "\e[38;5;16m●"
+			}
+			elsif ($state eq 'police' and $curpolice == $x and $origpolice == $y) {
+				print "\e[38;5;${policecolor}m○"
+			}
+			elsif ($paths[$y][$x][UP] and $paths[$y][$x][DOWN]) { print "\e[38;5;16m┃"; }
+			elsif ($paths[$y][$x][LEFT] and $paths[$y][$x][RIGHT]) { print "\e[38;5;16m━"; }
+			elsif ($paths[$y][$x][UP] and $paths[$y][$x][RIGHT]) { print "\e[38;5;16m┗"; }
+			elsif ($paths[$y][$x][UP] and $paths[$y][$x][LEFT]) { print "\e[38;5;16m┛"; }
+			elsif ($paths[$y][$x][DOWN] and $paths[$y][$x][RIGHT]) { print "\e[38;5;16m┏"; }
+			elsif ($paths[$y][$x][DOWN] and $paths[$y][$x][LEFT]) { print "\e[38;5;16m┓"; }
+			else { print " "; }
+			if ($paths[$y][$x][RIGHT]) {
+				if ((!$paths[$y][$x][LEFT]
+				 and !$paths[$y][$x][UP]
+				 and !$paths[$y][$x][DOWN])
+				  or ($state eq 'police' and $curpolice == $x and $police[$curpolice] == $y)) {
+					print "\e[38;5;16m╺━";
+				}
+				else { print "\e[38;5;16m━━"; }
+			}
+			else { print "  "; }
+		}
+		print "\e[48;5;236m  \e[0m ";
+		($text[$text_line++] // sub{})->();
+		print "\n\e[48;5;236m  ";
+		for my $x (0..$WIDTH-1) {
+			print "\e[48;5;$colors[$board[$y][$x]]m";
+			my @poss = sort grep $_ != $board[$y][$x], @{$possibilities[$y][$x]};
+			if (@poss == 6 and $board[$y][$x] == 0) { @poss = () };
+			for (1..5) {
+				if ($_ == 3 and $paths[$y][$x][DOWN]) {
+					print "\e[38;5;16m┃";
+					shift @poss;
+				}
+				elsif (@poss) {
+					print "\e[38;5;$colors[shift(@poss)]m.";
+				}
+				else {
+					print " ";
+				}
+			}
+		}
+		print "\e[48;5;236m  \e[0m ";
+		($text[$text_line++] // sub{})->();
+		print "\n";
+	}
+	print "\e[48;5;236m                                  \e[0m\n";
+	print "\e[5;".(28 + $WIDTH*5 + length($command))."H";
+}
+
+
+### Turns and logic
+
+sub start_turn {
+	start_move();
+	$state = 'moving';
+	$command = "";
+	$origtile = 0;
+	$status = "";
+}
+
+sub quit {
+	print "\e[".(6+$HEIGHT*3).";1H";
+	system('stty echo icanon');
+	exit;
+}
+
+sub unknown_binding {
+	my ($c) = @_;
+	if (ord($c) >= 32 and ord($c) <= 127) {
+		$status = "No action for key '$c'.";
+	}
+	else {
+		$status = sprintf("No action for key 0x%02x.", ord($c));
+	}
+}
+
+
+
+### MAIN
+
+$SIG{INT} = sub { quit(); };
+$SIG{__DIE__} = sub {
+	my $mess = $_[0];
+	print "\e[".(6+$HEIGHT*3).";1H";
+	system('stty echo icanon');
+	die $mess;
+};
+system('stty -echo -icanon');
+for my $y (0..$HEIGHT-1) {
+	$board[$y] = [(0) x $WIDTH];
+}
+#random_seed();
+
+draw_tile();
+#start_turn();
+render();
+for (;;) {
+	my $c = getc(STDIN);
+	$status = "";
+	$need_confirm and $need_confirm--;
+	quit() if $c eq 'Q';
+	if ($state eq 'start') {
+		if ($c eq "\e") {
+			if (getc(STDIN) eq '[') {
+				given (getc(STDIN)) {
+					when ('A') { move_tile(UP); }
+					when ('B') { move_tile(DOWN); }
+					when ('C') { move_tile(RIGHT); }
+					when ('D') { move_tile(LEFT); }
+				}
+			}
+		}
+		elsif ($c eq "\n") {
+			if (place_tile()) {
+				$turn = !$turn;
+				if (board_full()) {
+					@text = @text_2;
+					start_turn();
+				}
+				else {
+					$status = "";
+					draw_tile();
+				}
+			}
+		}
+		else {
+			unkown_binding($c);
+		}
+	}
+	else { given ($state) {
+		when ('moving') {
+			if ($c eq "\e") {
+				if (getc(STDIN) eq '[') {
+					given (getc(STDIN)) {
+						when ('A') { move(UP); }
+						when ('B') { move(DOWN); }
+						when ('C') { move(RIGHT); }
+						when ('D') { move(LEFT); }
+					}
+				}
+			}
+			elsif ($c eq "\n") {
+				if (can_end_move()) {
+					if ($need_confirm) {
+							end_move();
+							$turn = !$turn;
+							start_turn();
+					}
+					else {
+						$status = @moves ? "End turn without taking an action?" : "End turn without moving or taking an action?";
+						$need_confirm = 2;
+					}
+				}
+			}
+			elsif ($c eq 'B') {
+				if (can_end_move()) {
+					if (alter(BEXT)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq 'b') {
+				if (can_end_move()) {
+					if (alter(BMOD)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq 'n') {
+				if (can_end_move()) {
+					if (alter(NEUT)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq 'r') {
+				if (can_end_move()) {
+					if (alter(RMOD)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq 'R') {
+				if (can_end_move()) {
+					if (alter(REXT)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq 'c') {
+				if (can_end_move()) {
+					if (alter(CHAOS)) {
+						$command = $c;
+						$state = 'alter';
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			elsif ($c eq "\x7f") {
+				undo_move();
+			}
+			elsif ($c ~~ /(\d)/ and $c > 0 and $c <= $WIDTH) {
+				if (can_end_move()) {
+					if ($board[$HEIGHT-1][$c-1] == ($turn == RED ? any(REXT, RMOD) : any(BEXT, BMOD))) {
+						$command = $c;
+						$state = 'police';
+						$curpolice = $c-1;
+						start_move_police();
+					}
+					else {
+						$status = "You don't control Time Police #$c";
+					}
+				} else { $status = "Cannot land next to the Time Police"; }
+			}
+			else {
+				unknown_binding($c);
+			}
+		}
+		when ('alter') {
+			if ($c eq "\n") {
+				if (end_move()) {
+					propogate(px, py);
+					$turn = !$turn;
+					start_turn();
+				}
+			}
+			elsif ($c eq "\x7f") {
+				$board[py][px] = $origtile;
+				$state = 'moving';
+				$command = "";
+			}
+			else {
+				unknown_binding($c);
+			}
+		}
+		when ('police') {
+			if ($c eq "\n") {
+				if (can_end_move()) {
+					if (end_move()) {
+						$turn = !$turn;
+						start_turn();
+					}
+				} else { $status = "Cannot put the Time Police next to yourself."; }
+			}
+			elsif ($c eq "\e") {
+				if (getc(STDIN) eq '[') {
+					given (getc(STDIN)) {
+						when ('A') {
+							move_police(UP);
+						}
+						when ('B') {
+							move_police(DOWN);
+						}
+					}
+				}
+			}
+			elsif ($c eq "\x7f") {
+				undo_move_police();
+				$state = 'moving';
+				$command = "";
+			}
+			else {
+				unknown_binding($c);
+			}
+		}
+	} }
+	render();
+}
+
+
+

@@ -70,6 +70,8 @@ our $tile_type;
 
 our $turn = (0, 1)[rand(2)];
 our $state = 'start';
+our $invert_tile = 1;
+our $can_put = 1;
 our @origpos = (0, 0);
 our @moves = ();
 our $move_counter = 0;
@@ -361,6 +363,24 @@ sub draw_tile {
 	$tile_type = pick(1..6);
 }
 
+sub invert_tile {
+	$tile_type = (REXT, RMOD, CHAOS, BMOD, BEXT, NEUT)[$tile_type - 1];
+}
+
+sub check_can_put {
+	$can_put = 0;
+	for my $y (0..$HEIGHT-1) {
+		for my $x (0..$WIDTH-1) {
+			if ($board[$y][$x] == 0
+			and any(@{$possibilities[$y][$x]}) == $tile_type) {
+				$can_put = 1;
+				return;
+			}
+		}
+	}
+}
+
+
 sub move_tile {
 	given ($_[0]) {
 		when (UP) { return if $tile_pos[1] >= $HEIGHT-1; $tile_pos[1]++ }
@@ -374,6 +394,14 @@ sub place_tile {
 	if ($board[$tile_pos[1]][$tile_pos[0]] == 0) {
 		if (any(@{$possibilities[$tile_pos[1]][$tile_pos[0]]}) == $tile_type) {
 			$board[$tile_pos[1]][$tile_pos[0]] = $tile_type;
+			propogate(@tile_pos);
+			return 1;
+		}
+		elsif (not $can_put) {
+			$board[$tile_pos[1]][$tile_pos[0]] = $tile_type;
+			render();
+			$board[$tile_pos[1]][$tile_pos[0]] = pick(@{$possibilities[$tile_pos[1]][$tile_pos[0]]});
+			microsleep(.3);
 			propogate(@tile_pos);
 			return 1;
 		}
@@ -861,19 +889,34 @@ for (;;) {
 		}
 		elsif ($c eq "\n") {
 			if (place_tile()) {
-				$turn = !$turn;
 				if (board_full()) {
+					$turn = !$turn;
 					@text = @text_2;
 					start_turn();
 				}
 				else {
 					$status = "";
-					draw_tile();
+					if ($invert_tile) {
+						$turn = !$turn;
+						invert_tile();
+						check_can_put();
+						unless ($can_put) {
+							$status = "(It will be changed after being placed.)"
+						}
+					}
+					else {
+						draw_tile();
+						check_can_put();
+						unless ($can_put) {
+							$status = "(It will be changed after being placed.)"
+						}
+					}
+					$invert_tile = !$invert_tile;
 				}
 			}
 		}
 		else {
-			unkown_binding($c);
+			unknown_binding($c);
 		}
 	}
 	else { given ($state) {
